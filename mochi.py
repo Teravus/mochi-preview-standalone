@@ -1,7 +1,7 @@
 
 import sys
 import logging
-
+import re
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
@@ -11,6 +11,7 @@ import comfy.model_management as mm
 sys.stdout.write("Imports ...\n")
 sys.stdout.flush()
 
+import imageio
 import os
 
 import torch
@@ -22,6 +23,10 @@ from PIL import Image
 from inferStandalone import DownloadAndLoadMochiModel, get_matching_filename, MochiTextEncode, MochiSampler, \
     MochiLatentPreview, MochiDecode, CLIPLoader
 
+VOC_prompts = [
+    # VOC START - DO NOT DELETE
+    # VOC FINISH - DO NOT DELETE
+]
 
 def parse_args():
     desc = "Blah"
@@ -76,6 +81,9 @@ def parse_args():
 
     args = parser.parse_args()
 
+    if len(VOC_prompts) > 0:
+        args.prompt = VOC_prompts
+
     # you can adjust these depending on what you want to do, I just put them under args because it keeps them together in the file
     args.clippath = './models/clip/t5xxl_fp16.safetensors'
     args.vaepath = './models/vae/mochi/mochi_preview_vae_decoder_bf16.safetensors'
@@ -94,14 +102,23 @@ def parse_args():
 
     return args
 
+
+def sanitize_filename(text):
+    return re.sub(r'[^a-zA-Z0-9]', '_', text)
+
+
+# Default 251 is 255 characters minus '.mp4'
+def truncate_filename(output_dir, filename, max_length=251):
+    max_filename_length = max_length - len(output_dir) - 1  # Subtract length of directory and separator
+    return filename[:max_filename_length] if len(filename) > max_filename_length else filename
+
+
 def is_float(element):
     try:
         float(element)
         return True
     except ValueError:
         return False
-
-
 
 
 def load_model(args):
@@ -162,13 +179,12 @@ if __name__ == '__main__':
 
     args2=parse_args()
 
-
-
     model_paths_check = [
         args2.clippath,
         args2.vaepath,
         args2.mochipath
     ]
+
 
     all_Models_exist = True
     for path in model_paths_check:
@@ -177,46 +193,96 @@ if __name__ == '__main__':
             all_Models_exist = False
 
     if all_Models_exist:
+
+        if isinstance(args2.prompt, list) and len(args2.prompt) % 2 != 0:
+            raise ValueError("Prompt list must contain an even number of elements for positive and negative prompts.")
+
+        if isinstance(args2.prompt, list) and len(args2.prompt) > 0:
+            num_iterations = len(args2.prompt) // 2
+            print("Found VOC Prompt.")
+        else:
+            num_iterations = 1
+
+        pclip, mochi_model, vae_model = None, None, None
+
         with torch.no_grad():
-            # Get Clip
-            pclip = get_clip(args2)
-            print("Clip Loaded")
-            negative_embeddings = None
-            # Get Clip Embeddings
+            for i in range(num_iterations):
+                if i == 0:
+                    pclip = get_clip(args2)
+                    print("Clip Loaded")
 
-            positive_embeddings = load_t5_embeddings(args=args2, pprompt=args2.prompt,
-                                                     pstrength=args2.prompt_strength,
-                                                     pforce_offload=args2.prompt_force_offload, pclip=pclip)
-            print("Positive Clip Embeddings")
-            if len(args2.promptn) > 0:
-                negative_embeddings = load_t5_embeddings(args=args2, pprompt=args2.promptn,
-                                                         pstrength=args2.promptn_strength,
-                                                         pforce_offload=args2.promptn_force_offload, pclip=pclip)
-            else:
-                negative_embeddings = load_t5_embeddings(args=args2, pprompt='', pstrength=args2.promptn_strength,
-                                                         pforce_offload=args2.promptn_force_offload, pclip=pclip)
-            print("Negative Clip Embeddings")
-            print("loading Mochi")
-            mochi_model, vae_model = load_model(args2)
-            print("mochi loaded")
-            print("beginning samples")
-            # Models loaded
-            mochi_latent_samples = process_sampler(args=args2, mochi_model_obj=mochi_model, positive_embeddings=positive_embeddings, negative_embeddings=negative_embeddings)
-            # torch.save(mochi_latent_samples, 'z_tensor.pt')
-            # mochi_latent_samples = torch.load('z_tensor.pt')[0]
-            latent_previews = get_decoded_latent_preview(args=args2, mochi_latent_samples=mochi_latent_samples[0], vae_model_obj=vae_model)
-            frames = latent_previews[0].cpu()
-            frames_np = frames.numpy()  # Shape: (num_frames, height, width, 3)
-            frames_np = (frames_np * 255).astype(np.uint8)
-            import imageio
+                    print("loading Mochi")
+                    mochi_model, vae_model = load_model(args2)
+                    print("mochi loaded")
+                else:
+                    print("Clip and Mochi already loaded. Running the sampling with existing models")
+                if isinstance(args2.prompt, list):
+                    current_prompt = args2.prompt[i * 2]
+                    current_promptn = args2.prompt[(i * 2) + 1]
+                else:
+                    current_prompt = args2.prompt
+                    current_promptn = args2.promptn
 
-            # Define the output path and frames per second
-            output_path = args2.output_path  # Ensure this is a valid path ending with .mp4 or .avi
-            fps = args2.fps  # Adjust as needed
+                # Get Clip Embeddings
+                positive_embeddings = load_t5_embeddings(args=args2, pprompt=current_prompt,
+                                                         pstrength=args2.prompt_strength,
+                                                         pforce_offload=args2.prompt_force_offload, pclip=pclip)
+                print("Positive Clip Embeddings")
+                if len(current_promptn) > 0:
+                    negative_embeddings = load_t5_embeddings(args=args2, pprompt=current_promptn,
+                                                             pstrength=args2.promptn_strength,
+                                                             pforce_offload=args2.promptn_force_offload,
+                                                             pclip=pclip)
+                else:
+                    negative_embeddings = load_t5_embeddings(args=args2, pprompt='',
+                                                             pstrength=args2.promptn_strength,
+                                                             pforce_offload=args2.promptn_force_offload,
+                                                             pclip=pclip)
+                print("Negative Clip Embeddings")
 
-            # Write the video
-            imageio.mimwrite(output_path, frames_np, fps=fps)
+                print("beginning samples")
+                # Models loaded
+                mochi_latent_samples = process_sampler(args=args2, mochi_model_obj=mochi_model,
+                                                       positive_embeddings=positive_embeddings,
+                                                       negative_embeddings=negative_embeddings)
+                # torch.save(mochi_latent_samples, 'z_tensor.pt')
+                # mochi_latent_samples = torch.load('z_tensor.pt')[0]
+                latent_previews = get_decoded_latent_preview(args=args2, mochi_latent_samples=mochi_latent_samples[0],
+                                                             vae_model_obj=vae_model)
+                frames = latent_previews[0].cpu()
+                frames_np = frames.numpy()  # Shape: (num_frames, height, width, 3)
+                frames_np = (frames_np * 255).astype(np.uint8)
 
+                output_path = args2.output_path
+
+                # Define the output path and frames per second
+                # If we have an array of prompts or the provided path is a directory, use the prompt to write the file.
+                if isinstance(args2.prompt, list) or os.path.isdir(output_path):
+                    # Sanitize prompt text to create a filename
+                    sanitized_prompt = sanitize_filename(current_prompt)
+                    # Get output directory
+                    output_dir = args2.output_path
+                    if not os.path.isdir(output_dir):
+                        output_dir = os.path.dirname(output_dir)
+
+                    # Create output path with sanitized filename
+                    sanitized_filename = sanitized_prompt
+                    truncated_filename = truncate_filename(output_dir, sanitized_prompt)
+                    output_path = os.path.join(output_dir, f"{truncated_filename}.mp4")
+
+
+                fps = args2.fps  # Adjust as needed
+
+                # Write the video
+                imageio.mimwrite(output_path, frames_np, fps=fps)
+                del frames_np
+                del frames
+                del latent_previews
+                del mochi_latent_samples
+                del positive_embeddings
+                del negative_embeddings
+                torch.cuda.empty_cache()
+                mm.soft_empty_cache()
 
 
 

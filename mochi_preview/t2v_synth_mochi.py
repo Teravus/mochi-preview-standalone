@@ -354,9 +354,9 @@ class T2VSynthMochiModel:
 
         # comfy_pbar = ProgressBar(sample_steps)
 
-        print_cuda_memory_stats()
+        # print_cuda_memory_stats()
 
-        get_model_size(self.dit)
+        # get_model_size(self.dit)
 
         if (hasattr(self.dit, "cublas_half_matmul") and self.dit.cublas_half_matmul) or self.device.type == "mps":
             autocast_dtype = torch.float16
