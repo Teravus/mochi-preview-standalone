@@ -24,8 +24,8 @@ from inferStandalone import DownloadAndLoadMochiModel, get_matching_filename, Mo
     MochiLatentPreview, MochiDecode, CLIPLoader
 
 VOC_prompts = [
-    # VOC START - DO NOT DELETE
-    # VOC FINISH - DO NOT DELETE
+# VOC START - DO NOT DELETE
+# VOC FINISH - DO NOT DELETE
 ]
 
 def parse_args():
